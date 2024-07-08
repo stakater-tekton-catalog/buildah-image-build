@@ -1,0 +1,127 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: stakater-buildah-image-build
+  labels:
+    app.kubernetes.io/version: "{{ .Chart.Version }}"
+spec:
+  description: >-
+    Buildah Image Build task builds source into a container image.
+    Buildah Task builds source into a container image using Project Atomic's
+    Buildah build tool.It uses Buildah's support for building from Dockerfiles,
+    using its buildah bud command.This command executes the directives in the
+    Dockerfile to assemble a container image.
+  params:
+    - name: IMAGE_NAME
+      type: string
+      description: Reference of the image buildah will produce. Consists of application name proceeded by tag.
+    - name: BUILDER_IMAGE
+      type: string
+      description: The location of the buildah builder image.
+      default: >-
+        registry.redhat.io/rhel8/buildah@sha256:180c4d9849b6ab0e5465d30d4f3a77765cf0d852ca1cb1efb59d6e8c9f90d467
+    - name: STORAGE_DRIVER
+      type: string
+      description: Set buildah storage driver
+      default: overlay
+    - name: DOCKERFILE
+      type: string
+      description: Path to the Dockerfile to build.
+      default: ./Dockerfile
+    - name: CONTEXT
+      type: string
+      description: Path to the directory to use as context.
+      default: .
+    - name: TLSVERIFY
+      type: string
+      description: >-
+        Verify the TLS on the registry endpoint (for push/pull to a non-TLS
+        registry)
+      default: 'true'
+    - name: FORMAT
+      type: string
+      description: 'The format of the built container, oci or docker'
+      default: oci
+    - name: BUILD_EXTRA_ARGS
+      type: string
+      description: Extra parameters passed for the build command when building images.
+      default: ''
+    - name: BUILD_IMAGE
+      type: string
+      default: 'true'
+      description: Flag specifying whether image should be built again.
+    - name: IMAGE_REGISTRY
+      type: string
+      default: 'NA'
+      optional: true
+      description: Image registry url.
+    - name: CURRENT_GIT_TAG
+      type: string
+      default: ''
+      description: Current version of the application/image in dev.
+    - name: REPO_NAME
+      type: string
+      description: Name of the repository
+      default: 'NA'
+  steps:
+    - image: $(params.BUILDER_IMAGE)
+      name: build
+      resources: {}
+      env:
+        - name: IMAGE_REGISTRY
+          valueFrom:
+            secretKeyRef:
+              name: docker-reg-creds
+              key: url
+              optional: true
+        - name: WORKSPACE_BUILDAH_GIT_DEPENDENCY_TOKEN_BOUND
+          value: $(workspaces.buildah-git-dependency-token.bound)
+      script: |
+        
+        # Required when image has dependencies in a private image registry.
+        # You will need to provide BUILD_EXTRA_ARGS to create the correct format.
+        
+        if [ "${WORKSPACE_BUILDAH_GIT_DEPENDENCY_TOKEN_BOUND}" = "true"  ]; then
+          token=$(ls ../buildah-git-dependency-token/)
+          FILE=../buildah-git-dependency-token/$token 
+          echo "$FILE exists."
+          GIT_DEPENDENCY_TOKEN=`cat $FILE` 
+        else 
+          echo "$FILE does not exist."
+          GIT_DEPENDENCY_TOKEN=''
+        fi
+        if [ $(params.IMAGE_REGISTRY) != "NA" ]; then
+          OVERRIDE=true
+          buildah pull docker://$(params.IMAGE_REGISTRY)/$(params.REPO_NAME):$(params.CURRENT_GIT_TAG) || Image_unavailable=$?
+        else
+          buildah pull docker://${IMAGE_REGISTRY}/$(params.REPO_NAME):$(params.CURRENT_GIT_TAG) || Image_unavailable=$?
+        fi        
+
+        if [[ $(params.BUILD_IMAGE) == true ||  $Image_unavailable != ''
+        ]]; then
+          if [ "$OVERRIDE" = true ]; then
+            buildah --storage-driver=$(params.STORAGE_DRIVER) bud \
+            $(params.BUILD_EXTRA_ARGS)$GIT_DEPENDENCY_TOKEN --format=$(params.FORMAT) \
+            --tls-verify=$(params.TLSVERIFY) --no-cache \
+            -f $(params.DOCKERFILE) -t $(params.IMAGE_NAME) $(params.CONTEXT)
+          else
+          buildah --storage-driver=$(params.STORAGE_DRIVER) bud \
+          $(params.BUILD_EXTRA_ARGS)$GIT_DEPENDENCY_TOKEN --format=$(params.FORMAT) \
+          --tls-verify=$(params.TLSVERIFY) --no-cache \
+          -f $(params.DOCKERFILE) -t $(params.IMAGE_NAME) $(params.CONTEXT)
+          fi
+        fi
+
+      securityContext:
+        privileged: true
+      volumeMounts:
+        - mountPath: /var/lib/containers
+          name: varlibcontainers
+      workingDir: $(workspaces.source.path)
+  volumes:
+    - emptyDir: {}
+      name: varlibcontainers
+  workspaces:
+    - name: source
+    - name: buildah-git-dependency-token
+      optional: true
