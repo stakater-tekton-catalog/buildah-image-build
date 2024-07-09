@@ -111,6 +111,8 @@ spec:
           -f $(params.DOCKERFILE) -t $(params.IMAGE_NAME) $(params.CONTEXT)
           fi
         fi
+        mkdir /workspace/source/containers/
+        cp -r /var/lib/containers/* /workspace/source/containers
 
       securityContext:
         privileged: true
